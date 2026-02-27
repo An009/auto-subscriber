@@ -1,2 +1,7 @@
-https://example.com/newsletter
-https://anotherexample.com/subscribe
+http://pbs.org	
+http://peta.org	
+http://feederwatch.org	
+http://wienerzeitung.at	
+http://goldmansachs.com	
+http://vrt.be	
+http://fragrancenet.com
