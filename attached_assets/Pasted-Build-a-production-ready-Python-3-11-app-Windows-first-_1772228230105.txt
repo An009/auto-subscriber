@@ -1,0 +1,63 @@
+Build a production-ready Python 3.11 app (Windows-first) that auto-subscribes an email to newsletters from a list of URLs. Rebuild from scratch (new repo) and deliver a polished, user-friendly PySide6 GUI that shows the browser live while processing. Follow these non-negotiable rules exactly.
+
+1) ARCHITECTURE & SYNC RULE
+- Use Playwright SYNC API only: `from playwright.sync_api import sync_playwright`. 
+- Do NOT use async/await or asyncio anywhere.
+- Background work must run in threads (threading or ThreadPoolExecutor) so GUI never blocks.
+
+2) GUI / UX
+- PySide6 desktop app (modern, clean styling). Main controls: Load URLs file, Email input, Start, Pause, Resume, Cancel, Headed (show browser) toggle, Retries config.
+- Live view: current URL, current step (loading → detecting → filling → submitting → result), streaming log area, progress bar, counts (succeeded/failed/remaining), results table (URL | status | attempts | last message | timestamp). Row click opens URL in system browser and focuses Playwright window.
+- Browser visibility: default to headful so user sees live browser actions. Provide optional screenshot-preview (checkbox) updated every N seconds; also provide "Open browser window" button to focus the Playwright window.
+- Safe shutdown: Cancel/close must stop worker thread, close Playwright cleanly, and flush DB.
+
+3) FORM DETECTION & SUBMISSION (robust)
+- Parse HTML first with BeautifulSoup for detection heuristics; use Playwright only for interaction/confirmation.
+- Detection priority:
+  1. `input[type="email"]`
+  2. `input[name*="email"]`, `input[id*="email"]`, `input[placeholder*="email"]`
+  3. `form` elements containing keywords: subscribe, signup, newsletter, join, get updates
+- Search inside iframes too.
+- Interaction rules: Always use `page.locator(sel)` for waits and fills. Never call `.wait_for()` on an ElementHandle. If only ElementHandle exists, use `evaluate()` fallback to set value and dispatch events.
+- Submit strategy (fallback order): click `button[type=submit]` → click `input[type=submit]` → click nearest `button` in form → call `form.submit()` via JS → press Enter in input.
+- Timeouts: default 60s per wait; locator waits use `locator.wait_for(state="visible", timeout=60000)`.
+
+4) PROCESSING, ERROR HANDLING & PERSISTENCE
+- Sequential processing (configurable concurrency but default OFF). Retries default 3.
+- Structured logging with full tracebacks written to GUI log and log file.
+- Persist results to SQLite (`jobs`, `attempts`, `status`, `timestamp`, `error`).
+- Status codes: `SUCCESS`, `NO_FORM_FOUND`, `FAILED_TO_FILL_EMAIL`, `FAILED_TO_SUBMIT`, `ERROR`.
+
+5) PROJECT STRUCTURE & DELIVERABLES
+- Provide complete repo with:
+src/
+main.py # CLI + GUI launcher
+gui.py # PySide6 UI
+subscriber.py # sync Playwright orchestration (thread-friendly)
+detector.py # BeautifulSoup + heuristics
+submitter.py # fill & submit helpers (locator + evaluate fallback)
+database.py # SQLite wrapper
+logger.py # structured logger to file + GUI sink
+utils.py
+tests/ # pytest unit tests for detector + an integration test
+requirements.txt
+README.md # Windows CMD setup/run + Playwright install steps
+example_urls.txt
+
+- Include unit tests (pytest) for detector and one integration test (headful, optional skip in CI).
+- Provide packaging notes (PyInstaller) and a short GIF/screenshots of the GUI in action.
+
+6) QUALITY RULES & COMMIT
+- No async/await anywhere.
+- Use Playwright Locator API for interactions.
+- GUI must show live browser and streaming logs.
+- Full tracebacks on exceptions.
+- Windows CMD startup instructions in README:
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python -m src.main # opens GUI
+
+- Final commit message: `feat(ui): sync-playwright subscriber with PySide6 live browser view and robust detection`
+
+End.
