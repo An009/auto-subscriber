@@ -16,6 +16,7 @@ class WorkerSignals(QObject):
     progress = Signal(int, int, str, str)
     log = Signal(str)
     result = Signal(str, str, int, str)
+    captcha = Signal(bool)
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -30,6 +31,7 @@ class MainWindow(QMainWindow):
         self.signals.progress.connect(self.update_progress)
         self.signals.log.connect(self.append_log)
         self.signals.result.connect(self.update_table)
+        self.signals.captcha.connect(self.handle_captcha)
         
         self.init_ui()
         self.load_history()
@@ -246,6 +248,16 @@ class MainWindow(QMainWindow):
                 
         self.add_table_row(url, status, attempts, message)
 
+    @Slot(bool)
+    def handle_captcha(self, is_paused):
+        if is_paused:
+            self.append_log("⚠️ AUTOMATION PAUSED BY CAPTCHA: Please solve it in the browser window, then it will auto-resume or you can click Resume.")
+            self.btn_pause.setEnabled(False)
+            self.btn_resume.setEnabled(True)
+        else:
+            self.btn_pause.setEnabled(True)
+            self.btn_resume.setEnabled(False)
+
     def start_processing(self):
         if not self.urls:
             self.append_log("No URLs loaded.")
@@ -274,7 +286,8 @@ class MainWindow(QMainWindow):
             extra_wait=self.spin_wait.value(),
             progress_callback=self.signals.progress.emit,
             log_callback=self.signals.log.emit,
-            result_callback=self.signals.result.emit
+            result_callback=self.signals.result.emit,
+            captcha_callback=self.signals.captcha.emit
         )
         self.worker.start()
 

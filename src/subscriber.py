@@ -5,10 +5,13 @@ from .database import Database
 from .detector import detect_form
 from .submitter import fill_email, submit_form
 from typing import Callable, List
+import time
+import os
 
 class SubscriberWorker(threading.Thread):
     def __init__(self, urls: List[str], emails: List[str], headless: bool, retries: int, extra_wait: int,
-                 progress_callback: Callable, log_callback: Callable, result_callback: Callable):
+                 progress_callback: Callable, log_callback: Callable, result_callback: Callable,
+                 captcha_callback: Callable = None):
         super().__init__()
         self.urls = urls
         self.emails = emails
@@ -18,22 +21,53 @@ class SubscriberWorker(threading.Thread):
         self.progress_callback = progress_callback
         self.log_callback = log_callback
         self.result_callback = result_callback
+        self.captcha_callback = captcha_callback
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()
         self._pause_event.set() # Set means not paused
+        self._captcha_pause_event = threading.Event()
+        self._captcha_pause_event.set() # Set means not paused by captcha
         self.db = Database()
+
+    def handle_notify(self, source, event_data):
+        event_type = event_data.get("type")
+        if event_type == "paused":
+            reason = event_data.get("reason", "Unknown")
+            self.log_callback(f"⚠️ Script paused dynamically: {reason}")
+            self._captcha_pause_event.clear()
+            if self.captcha_callback:
+                self.captcha_callback(True)
+        elif event_type == "resumed":
+            self.log_callback("▶️ Script resumed dynamically.")
+            self._captcha_pause_event.set()
+            if self.captcha_callback:
+                self.captcha_callback(False)
+        elif event_type == "log":
+            self.log_callback(f"ℹ️ {event_data.get('message')}")
+
+    def wait_if_paused(self):
+        self._pause_event.wait()
+        while not self._captcha_pause_event.is_set() and not self._stop_event.is_set():
+            time.sleep(0.5)
 
     def run(self):
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=self.headless)
             context = browser.new_context()
             
+            # Read injector script
+            injector_path = os.path.join(os.path.dirname(__file__), "injector.js")
+            injector_code = ""
+            if os.path.exists(injector_path):
+                with open(injector_path, "r", encoding="utf-8") as f:
+                    injector_code = f.read()
+            
             total_tasks = len(self.urls) * len(self.emails)
             current_task = 0
             
             for url in self.urls:
                 for email in self.emails:
-                    self._pause_event.wait()
+                    self.wait_if_paused()
                     
                     if self._stop_event.is_set():
                         self.log_callback("Worker cancelled.")
@@ -45,7 +79,7 @@ class SubscriberWorker(threading.Thread):
                     error_msg = ""
                     
                     for attempt in range(1, self.retries + 1):
-                        self._pause_event.wait()
+                        self.wait_if_paused()
                         if self._stop_event.is_set():
                             break
                             
@@ -53,12 +87,20 @@ class SubscriberWorker(threading.Thread):
                         
                         page = context.new_page()
                         try:
+                            # Expose binding and inject script
+                            page.expose_binding("notifyPython", self.handle_notify)
+                            if injector_code:
+                                page.add_init_script(injector_code)
+                                
                             page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                            
+                            self.wait_if_paused()
                             
                             if self.extra_wait > 0:
                                 self.log_callback(f"[{url}] Waiting extra {self.extra_wait}ms for page ready...")
                                 page.wait_for_timeout(self.extra_wait)
                                 
+                            self.wait_if_paused()
                             self.progress_callback(current_task - 1, total_tasks, url, f"detecting ({email})")
                             
                             html = page.content()
@@ -78,9 +120,11 @@ class SubscriberWorker(threading.Thread):
                                 error_msg = "Could not detect a subscription form."
                                 self.log_callback(f"[{url}] {status}: {error_msg}")
                             else:
+                                self.wait_if_paused()
                                 self.progress_callback(current_task - 1, total_tasks, url, f"filling ({email})")
                                 # Wait fallback for 10s as requested
                                 if fill_email(page, selector, email, timeout=10000):
+                                    self.wait_if_paused()
                                     self.progress_callback(current_task - 1, total_tasks, url, f"submitting ({email})")
                                     if submit_form(page, selector):
                                         page.wait_for_timeout(3000) # Wait for confirmation
@@ -124,9 +168,11 @@ class SubscriberWorker(threading.Thread):
     def stop(self):
         self._stop_event.set()
         self._pause_event.set()
+        self._captcha_pause_event.set()
 
     def pause(self):
         self._pause_event.clear()
 
     def resume(self):
         self._pause_event.set()
+        self._captcha_pause_event.set()
