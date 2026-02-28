@@ -19,7 +19,7 @@ class WorkerSignals(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Auto Newsletter Subscriber")
+        self.setWindowTitle("Auto Newsletter Subscribe Made By @anwr009 | Telegram: @AnouarTizgui")
         self.resize(1000, 700)
         self.worker = None
         self.urls = []
