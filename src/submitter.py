@@ -1,10 +1,10 @@
 from playwright.sync_api import Page
 from .logger import logger
 
-def fill_email(page: Page, selector: str, email: str) -> bool:
+def fill_email(page: Page, selector: str, email: str, timeout: int = 10000) -> bool:
     try:
         locator = page.locator(selector).first
-        locator.wait_for(state="visible", timeout=60000)
+        locator.wait_for(state="visible", timeout=timeout)
         locator.fill(email)
         return True
     except Exception as e:

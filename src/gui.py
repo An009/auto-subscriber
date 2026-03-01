@@ -4,12 +4,13 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QLineEdit, QLabel, 
                                QFileDialog, QTableWidget, QTableWidgetItem, 
                                QProgressBar, QTextEdit, QCheckBox, QSpinBox,
-                               QHeaderView)
+                               QHeaderView, QMessageBox)
 from PySide6.QtCore import Qt, Signal, Slot, QObject
 from PySide6.QtGui import QColor, QBrush
 
 from .subscriber import SubscriberWorker
 from .database import Database
+from .utils import parse_emails_file
 
 class WorkerSignals(QObject):
     progress = Signal(int, int, str, str)
@@ -23,6 +24,7 @@ class MainWindow(QMainWindow):
         self.resize(1000, 700)
         self.worker = None
         self.urls = []
+        self.emails_list = []
         self.signals = WorkerSignals()
         
         self.signals.progress.connect(self.update_progress)
@@ -37,26 +39,36 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
         
-        # Top Controls
-        controls_layout = QHBoxLayout()
-        
+        # Top Controls - URLs
+        urls_layout = QHBoxLayout()
         self.btn_load = QPushButton("Load URLs File")
         self.btn_load.clicked.connect(self.load_urls)
-        controls_layout.addWidget(self.btn_load)
+        urls_layout.addWidget(self.btn_load)
         
-        self.lbl_urls = QLabel("No file loaded")
-        controls_layout.addWidget(self.lbl_urls)
+        self.lbl_urls = QLabel("No URLs loaded")
+        urls_layout.addWidget(self.lbl_urls)
+        urls_layout.addStretch()
+        layout.addLayout(urls_layout)
+
+        # Top Controls - Emails
+        emails_layout = QHBoxLayout()
+        self.btn_load_emails = QPushButton("Upload Emails File")
+        self.btn_load_emails.clicked.connect(self.load_emails)
+        emails_layout.addWidget(self.btn_load_emails)
         
+        self.lbl_emails = QLabel("No emails loaded")
+        emails_layout.addWidget(self.lbl_emails)
+
         self.txt_email = QLineEdit()
-        self.txt_email.setPlaceholderText("Enter email to subscribe")
-        controls_layout.addWidget(self.txt_email)
+        self.txt_email.setPlaceholderText("Or enter a single email here...")
+        emails_layout.addWidget(self.txt_email)
         
-        layout.addLayout(controls_layout)
+        layout.addLayout(emails_layout)
         
         # Config
         config_layout = QHBoxLayout()
         self.chk_headless = QCheckBox("Headless Mode (Hide Browser)")
-        self.chk_headless.setChecked(False) # Default headful
+        self.chk_headless.setChecked(False)
         config_layout.addWidget(self.chk_headless)
         
         config_layout.addWidget(QLabel("Retries:"))
@@ -64,6 +76,13 @@ class MainWindow(QMainWindow):
         self.spin_retries.setValue(3)
         self.spin_retries.setMinimum(1)
         config_layout.addWidget(self.spin_retries)
+
+        config_layout.addWidget(QLabel("Page Ready Wait (ms):"))
+        self.spin_wait = QSpinBox()
+        self.spin_wait.setRange(0, 20000)
+        self.spin_wait.setSingleStep(1000)
+        self.spin_wait.setValue(3000)
+        config_layout.addWidget(self.spin_wait)
         
         config_layout.addStretch()
         layout.addLayout(config_layout)
@@ -126,7 +145,27 @@ class MainWindow(QMainWindow):
                 self.lbl_urls.setText(f"{len(self.urls)} URLs loaded")
                 self.update_stats()
             except Exception as e:
-                self.append_log(f"Failed to read file: {e}")
+                self.append_log(f"Failed to read URLs file: {e}")
+
+    def load_emails(self):
+        file_name, _ = QFileDialog.getOpenFileName(self, "Open Emails File", "", "Text/CSV Files (*.txt *.csv);;All Files (*)")
+        if file_name:
+            try:
+                valid, invalid = parse_emails_file(file_name)
+                
+                if invalid:
+                    msg = f"Found {len(invalid)} invalid email(s).\n\nExamples:\n" + "\n".join(invalid[:5])
+                    msg += "\n\nDo you want to continue with only the valid emails?"
+                    reply = QMessageBox.question(self, "Invalid Emails Detected", msg, QMessageBox.Yes | QMessageBox.No)
+                    if reply == QMessageBox.No:
+                        return
+                        
+                self.emails_list = valid
+                self.lbl_emails.setText(f"{len(valid)} emails loaded")
+                self.append_log(f"Loaded {len(valid)} valid emails (deduplicated).")
+            except Exception as e:
+                self.append_log(f"Failed to read emails file: {e}")
+                QMessageBox.critical(self, "Error", str(e))
 
     def load_history(self):
         db = Database()
@@ -143,7 +182,7 @@ class MainWindow(QMainWindow):
         item_status = QTableWidgetItem(status)
         if status == "SUCCESS":
             item_status.setBackground(QBrush(QColor(100, 255, 100, 100)))
-        elif status in ["ERROR", "FAILED_TO_SUBMIT", "FAILED_TO_FILL_EMAIL", "NO_FORM_FOUND"]:
+        elif status in ["ERROR", "FAILED_TO_SUBMIT", "FAILED_TO_FILL_EMAIL", "NO_FORM_FOUND", "TIMEOUT"]:
             item_status.setBackground(QBrush(QColor(255, 100, 100, 100)))
             
         self.table.setItem(row, 1, item_status)
@@ -159,11 +198,11 @@ class MainWindow(QMainWindow):
             s = self.table.item(r, 1).text()
             if s == "SUCCESS":
                 succeeded += 1
-            elif s in ["ERROR", "FAILED_TO_SUBMIT", "FAILED_TO_FILL_EMAIL", "NO_FORM_FOUND"]:
+            elif s in ["ERROR", "FAILED_TO_SUBMIT", "FAILED_TO_FILL_EMAIL", "NO_FORM_FOUND", "TIMEOUT"]:
                 failed += 1
                 
-        remaining = len(self.urls) - (succeeded + failed) if self.urls else 0
-        remaining = max(0, remaining)
+        # Approximate remaining logic based on jobs
+        remaining = max(0, (len(self.urls) * max(1, len(self.emails_list))) - (succeeded + failed))
         self.lbl_stats.setText(f"Succeeded: {succeeded} | Failed: {failed} | Remaining: {remaining}")
 
     def on_table_click(self, row, column):
@@ -176,7 +215,7 @@ class MainWindow(QMainWindow):
         if total > 0:
             self.progress_bar.setMaximum(total)
             self.progress_bar.setValue(current)
-        self.lbl_status.setText(f"Step: {step} | URL: {url}")
+        self.lbl_status.setText(f"Step: {step} | Target: {url}")
         
         if current >= total and total > 0:
             self.btn_start.setEnabled(True)
@@ -190,7 +229,6 @@ class MainWindow(QMainWindow):
 
     @Slot(str, str, int, str)
     def update_table(self, url, status, attempts, message):
-        # Update existing row or add new
         for row in range(self.table.rowCount()):
             if self.table.item(row, 0).text() == url:
                 self.table.setItem(row, 1, QTableWidgetItem(status))
@@ -200,7 +238,7 @@ class MainWindow(QMainWindow):
                 item_status = self.table.item(row, 1)
                 if status == "SUCCESS":
                     item_status.setBackground(QBrush(QColor(100, 255, 100, 100)))
-                elif status in ["ERROR", "FAILED_TO_SUBMIT", "FAILED_TO_FILL_EMAIL", "NO_FORM_FOUND"]:
+                elif status in ["ERROR", "FAILED_TO_SUBMIT", "FAILED_TO_FILL_EMAIL", "NO_FORM_FOUND", "TIMEOUT"]:
                     item_status.setBackground(QBrush(QColor(255, 100, 100, 100)))
                     
                 self.update_stats()
@@ -212,9 +250,14 @@ class MainWindow(QMainWindow):
         if not self.urls:
             self.append_log("No URLs loaded.")
             return
-        email = self.txt_email.text().strip()
-        if not email:
-            self.append_log("Please enter an email.")
+            
+        emails_to_process = self.emails_list.copy()
+        single_email = self.txt_email.text().strip()
+        if single_email and single_email not in emails_to_process:
+            emails_to_process.append(single_email)
+            
+        if not emails_to_process:
+            self.append_log("Please enter an email or upload an emails file.")
             return
             
         self.btn_start.setEnabled(False)
@@ -225,9 +268,10 @@ class MainWindow(QMainWindow):
         
         self.worker = SubscriberWorker(
             urls=self.urls,
-            email=email,
+            emails=emails_to_process,
             headless=self.chk_headless.isChecked(),
             retries=self.spin_retries.value(),
+            extra_wait=self.spin_wait.value(),
             progress_callback=self.signals.progress.emit,
             log_callback=self.signals.log.emit,
             result_callback=self.signals.result.emit
